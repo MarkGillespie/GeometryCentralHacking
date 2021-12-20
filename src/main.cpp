@@ -1,8 +1,10 @@
+#include "geometrycentral/surface/integer_coordinates_intrinsic_triangulation.h"
 #include "geometrycentral/surface/manifold_surface_mesh.h"
 #include "geometrycentral/surface/meshio.h"
 #include "geometrycentral/surface/simple_idt.h"
 #include "geometrycentral/surface/vertex_position_geometry.h"
 
+#include "polyscope/curve_network.h"
 #include "polyscope/polyscope.h"
 #include "polyscope/surface_mesh.h"
 
@@ -66,14 +68,25 @@ int main(int argc, char** argv) {
         polyscope::guessNiceNameFromPath(filename), geometry->vertexPositions,
         mesh->getFaceVertexList(), polyscopePermutations(*mesh));
 
-    std::vector<double> vData;
-    vData.reserve(mesh->nVertices());
-    for (size_t iV = 0; iV < mesh->nVertices(); ++iV) {
-        vData.push_back(randomReal(0, 1));
-    }
+    IntegerCoordinatesIntrinsicTriangulation icit(*mesh, *geometry);
 
-    auto q = psMesh->addVertexScalarQuantity("data", vData);
-    q->setEnabled(true);
+    auto drawIntrinsicEdges = [&](std::string name) {
+        EdgeData<std::vector<SurfacePoint>> tracedIntrinsicEdges =
+            icit.traceAllIntrinsicEdgesAlongInput();
+        std::vector<Vector3> positions;
+        std::vector<std::array<size_t, 2>> edgeEdges;
+        for (Edge e : icit.intrinsicMesh->edges()) {
+            for (size_t iP = 0; iP + 1 < tracedIntrinsicEdges[e].size(); iP++)
+                edgeEdges.push_back(
+                    {positions.size() + iP, positions.size() + iP + 1});
+            for (const SurfacePoint& q : tracedIntrinsicEdges[e])
+                positions.push_back(q.interpolate(geometry->vertexPositions));
+        }
+        return polyscope::registerCurveNetwork(name, positions, edgeEdges);
+    };
+
+    icit.flipToDelaunay();
+    drawIntrinsicEdges("idt");
 
     // Give control to the polyscope gui
     polyscope::show();
