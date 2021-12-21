@@ -3,12 +3,14 @@
 #include "geometrycentral/surface/simple_idt.h"
 #include "geometrycentral/surface/vertex_position_geometry.h"
 
+#include "polyscope/point_cloud.h"
 #include "polyscope/polyscope.h"
 #include "polyscope/surface_mesh.h"
 
 #include "args/args.hxx"
 #include "imgui.h"
 
+#include "ConePlacer.h"
 #include "utils.h"
 
 using namespace geometrycentral;
@@ -62,18 +64,18 @@ int main(int argc, char** argv) {
     std::cout << "Genus: " << mesh->genus() << std::endl;
 
     // Register the mesh with polyscope
-    psMesh = polyscope::registerSurfaceMesh(
-        polyscope::guessNiceNameFromPath(filename), geometry->vertexPositions,
-        mesh->getFaceVertexList(), polyscopePermutations(*mesh));
+    psMesh = polyscope::registerSurfaceMesh("mesh", geometry->vertexPositions,
+                                            mesh->getFaceVertexList(),
+                                            polyscopePermutations(*mesh));
 
-    std::vector<double> vData;
-    vData.reserve(mesh->nVertices());
-    for (size_t iV = 0; iV < mesh->nVertices(); ++iV) {
-        vData.push_back(randomReal(0, 1));
-    }
+    ConePlacer fang(*mesh, *geometry);
+    std::vector<std::pair<Vertex, double>> cones = fang.optimalCones();
 
-    auto q = psMesh->addVertexScalarQuantity("data", vData);
-    q->setEnabled(true);
+    std::vector<Vector3> conePositions;
+    for (const std::pair<Vertex, double>& cone : cones)
+        conePositions.push_back(geometry->vertexPositions[cone.first]);
+
+    polyscope::registerPointCloud("cones", conePositions);
 
     // Give control to the polyscope gui
     polyscope::show();
