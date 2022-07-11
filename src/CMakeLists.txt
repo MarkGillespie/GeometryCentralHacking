@@ -5,16 +5,26 @@ if (CMAKE_BINARY_DIR STREQUAL CMAKE_SOURCE_DIR)
     message(FATAL_ERROR "Source and build directories cannot be the same. Go use the /build directory.")
 endif()
 
+# add_executable(
+#   run
+#   main.cpp
+#   utils.cpp
+#   ConePlacer.cpp
+# )
+# target_include_directories(run PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../include")
+# # borrow args.hxx directly from polyscope
+# target_include_directories(run PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../deps/polyscope/deps/args/")
+# target_link_libraries(run polyscope geometry-central)
+
 add_executable(
-  run
-  main.cpp
+  plate
+  PlateTrick.cpp
   utils.cpp
-  ConePlacer.cpp
 )
-target_include_directories(run PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../include")
+target_include_directories(plate PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../include")
 # borrow args.hxx directly from polyscope
-target_include_directories(run PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../deps/polyscope/deps/args/")
-target_link_libraries(run polyscope geometry-central)
+target_include_directories(plate PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../deps/polyscope/deps/args/")
+target_link_libraries(plate polyscope geometry-central)
 
 option(PACKAGE_TESTS "Build the tests" ON)
 
