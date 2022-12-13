@@ -5,6 +5,7 @@
 #include "geometrycentral/surface/vertex_position_geometry.h"
 
 #include "polyscope/curve_network.h"
+#include "polyscope/point_cloud.h"
 #include "polyscope/polyscope.h"
 #include "polyscope/surface_mesh.h"
 
@@ -48,8 +49,8 @@ Vector3 faceCenter(Halfedge he) {
     return he.isInterior() ? center(he.face()) : center(he.edge());
 }
 Vector3 dir(Edge e) {
-    return (center(e.halfedge().vertex()) -
-            center(e.halfedge().twin().vertex()))
+    return (center(e.halfedge().tipVertex()) -
+            center(e.halfedge().tailVertex()))
         .normalize();
 }
 Vector3 dualDir(Edge e) {
@@ -100,9 +101,6 @@ void plotDualTree(const FaceAndBoundaryData<Halfedge>& dualTree) {
     for (Face f : mesh->faces()) drawHalfedge(dualTree[f]);
     for (BoundaryLoop b : mesh->boundaryLoops()) {
         drawHalfedge(dualTree[b]);
-        if (dualTree[b] != Halfedge()) {
-            WATCH2(b, dualTree[b]);
-        }
     }
 
     polyscope::registerCurveNetwork("dual tree", nodePositions, edgeIndices)
@@ -123,7 +121,8 @@ void plotCut(const std::vector<Edge>& cut) {
     polyscope::registerCurveNetwork("cut", nodePositions, edgeIndices);
 }
 
-void plotPrimalCurves(const std::vector<std::vector<Halfedge>>& curves) {
+void plotPrimalCurves(const std::vector<std::vector<Halfedge>>& curves,
+                      std::string name = "primal loops") {
     std::vector<Vector3> nodePositions;
     std::vector<std::array<size_t, 2>> edgeIndices;
     std::vector<Vector3> edgeOrientations;
@@ -139,28 +138,35 @@ void plotPrimalCurves(const std::vector<std::vector<Halfedge>>& curves) {
         }
     }
 
-    polyscope::registerCurveNetwork("primal loops", nodePositions, edgeIndices)
+    polyscope::registerCurveNetwork(name, nodePositions, edgeIndices)
         ->addEdgeVectorQuantity("orientation", edgeOrientations);
 }
 
-void plotDualCurves(const std::vector<std::vector<Halfedge>>& curves) {
+void plotDualCurves(const std::vector<std::vector<Halfedge>>& curves,
+                    std::vector<double> edgeCosts = {},
+                    std::string name              = "dual loops") {
     std::vector<Vector3> nodePositions;
     std::vector<std::array<size_t, 2>> edgeIndices;
     std::vector<Vector3> edgeOrientations;
 
     for (const std::vector<Halfedge>& curve : curves) {
         for (Halfedge he : curve) {
+            verbose_assert(he != Halfedge(), "invalid curve");
             edgeIndices.push_back(
                 {nodePositions.size(), nodePositions.size() + 1});
-            nodePositions.push_back(center(he.face()));
-            nodePositions.push_back(center(he.twin().face()));
+            nodePositions.push_back(faceCenter(he));
+            nodePositions.push_back(faceCenter(he.twin()));
             double sign = he.orientation() ? 1 : -1;
             edgeOrientations.push_back(sign * dualDir(he.edge()));
         }
     }
 
-    polyscope::registerCurveNetwork("dual loops", nodePositions, edgeIndices)
-        ->addEdgeVectorQuantity("orientation", edgeOrientations);
+    auto dualLoops =
+        polyscope::registerCurveNetwork(name, nodePositions, edgeIndices);
+    dualLoops->addEdgeVectorQuantity("orientation", edgeOrientations);
+    if (!edgeCosts.empty()) {
+        dualLoops->addEdgeScalarQuantity("cost", edgeCosts);
+    }
 }
 
 void findParallelField(bool face = false) {
@@ -226,17 +232,65 @@ int main(int argc, char** argv) {
                                             mesh->getFaceVertexList(),
                                             polyscopePermutations(*mesh));
 
-    auto primalTree = buildPrimalSpanningTree(*mesh);
-    plotPrimalTree(primalTree);
-    auto dualTree = buildDualSpanningCotree(*mesh, primalTree);
-    plotDualTree(dualTree);
+    std::vector<Vector3> interestingPoints;
+    std::vector<size_t> interestingPointIndex;
+    auto markVertex = [&](size_t iV) {
+        interestingPoints.push_back(geom->vertexPositions[mesh->vertex(iV)]);
+        interestingPointIndex.push_back(iV);
+    };
+    auto markHalfedge = [&](size_t iH) {
+        Halfedge he   = mesh->halfedge(iH);
+        Vector3 vTip  = geom->vertexPositions[he.tipVertex()];
+        Vector3 vTail = geom->vertexPositions[he.tailVertex()];
+        Vector3 N     = geom->faceNormal(he.face());
+
+        Vector3 pos = vTip + vTail + cross(N, vTip - vTail) * 0.01;
+
+        interestingPoints.push_back(pos / 2.);
+        interestingPointIndex.push_back(iH);
+    };
+    auto markEdge = [&](size_t iE) {
+        Vector3 pos = Vector3::zero();
+        for (Vertex v : mesh->edge(iE).adjacentVertices()) {
+            pos += geom->vertexPositions[v];
+        }
+        interestingPoints.push_back(pos / 2.);
+        interestingPointIndex.push_back(iE);
+    };
+    auto markFace = [&](size_t iF) {
+        Vector3 pos = Vector3::zero();
+        for (Vertex v : mesh->face(iF).adjacentVertices()) {
+            pos += geom->vertexPositions[v];
+        }
+        interestingPoints.push_back(pos / 3.);
+        interestingPointIndex.push_back(iF);
+    };
+
+    // markHalfedge(1);
+    // markHalfedge(814);
+    markVertex(0);
+    // markFace(0);
+    // markEdge(7);
+    // markEdge(10);
+    // markEdge(28);
+    // markEdge(52);
+
+    if (!interestingPoints.empty()) {
+        polyscope::registerPointCloud("Interesting points", interestingPoints)
+            ->addScalarQuantity("index", interestingPointIndex);
+    }
+
+    // auto primalTree = buildPrimalSpanningTree(*mesh);
+    // plotPrimalTree(primalTree);
+    // auto dualTree = buildDualSpanningCotree(*mesh, primalTree);
+    // plotDualTree(dualTree);
 
     // auto primalCurves = computePrimalHomologyBasis(*mesh);
     // plotPrimalCurves(primalCurves);
 
-    auto bothCurves = computePrimalAndDualHomologyBases(*mesh);
-    plotPrimalCurves(std::get<0>(bothCurves));
-    plotDualCurves(std::get<1>(bothCurves));
+    // auto bothCurves = computePrimalAndDualHomologyBases(*mesh);
+    // plotPrimalCurves(std::get<0>(bothCurves));
+    // plotDualCurves(std::get<1>(bothCurves));
 
     // auto dualTree = buildDualSpanningCotree(*mesh);
     // plotDualTree(dualTree);
@@ -252,13 +306,78 @@ int main(int argc, char** argv) {
     // plotPrimalCurves(primalLoops);
     // geom->unrequireEdgeLengths();
 
+    if (true) {
+        geom->requireEdgeLengths();
+        geom->requireEdgeCotanWeights();
+        EdgeData<double> dualEdgeLengths(*mesh);
+        for (Edge e : mesh->edges()) {
+            dualEdgeLengths[e] =
+                geom->edgeCotanWeights[e] * geom->edgeLengths[e];
+        }
+        auto primalBasisAbsolute =
+            computePrimalHomologyBasis(*mesh, geom->edgeLengths, false);
+        plotPrimalCurves(primalBasisAbsolute, "primal absolute");
+        auto primalBasisRelative =
+            computePrimalHomologyBasis(*mesh, geom->edgeLengths, true);
+        plotPrimalCurves(primalBasisRelative, "primal relative");
+        auto dualBasisAbsolute =
+            computeDualHomologyBasis(*mesh, dualEdgeLengths, false);
+        plotDualCurves(dualBasisAbsolute, {}, "dual absolute");
+        auto dualBasisRelative =
+            computeDualHomologyBasis(*mesh, dualEdgeLengths, true);
+        plotDualCurves(dualBasisRelative, {}, "dual relative");
 
-    // geom->requireEdgeLengths();
-    // auto bothCurves =
-    //     computePrimalAndDualHomologyBases(*mesh, geom->edgeLengths);
-    // plotPrimalCurves(std::get<0>(bothCurves));
-    // plotDualCurves(std::get<1>(bothCurves));
-    // geom->unrequireEdgeLengths();
+        geom->unrequireEdgeCotanWeights();
+        geom->unrequireEdgeLengths();
+    }
+    if (false) {
+        bool connectBoundary = true;
+        geom->requireEdgeLengths();
+        geom->requireEdgeCotanWeights();
+        EdgeData<double> dualEdgeLengths(*mesh);
+        for (Edge e : mesh->edges()) {
+            dualEdgeLengths[e] =
+                geom->edgeCotanWeights[e] * geom->edgeLengths[e];
+        }
+        geom->unrequireEdgeCotanWeights();
+        geom->unrequireEdgeLengths();
+        auto dualTree =
+            buildDualSpanningCotree(*mesh, dualEdgeLengths, connectBoundary);
+        plotDualTree(dualTree);
+        auto primalTree = buildPrimalSpanningTree(*mesh, dualEdgeLengths,
+                                                  dualTree, !connectBoundary);
+        plotPrimalTree(primalTree);
+
+        auto bothCurves = computeDualAndPrimalHomologyBases(
+            *mesh, dualEdgeLengths, connectBoundary);
+        plotPrimalCurves(std::get<0>(bothCurves));
+        plotDualCurves(std::get<1>(bothCurves));
+    }
+    if (false) {
+        bool connectBoundary = true;
+        geom->requireEdgeLengths();
+        auto primalTree =
+            buildPrimalSpanningTree(*mesh, geom->edgeLengths, connectBoundary);
+        plotPrimalTree(primalTree);
+        auto dualTree = buildDualSpanningCotree(*mesh, geom->edgeLengths,
+                                                primalTree, connectBoundary);
+        plotDualTree(dualTree);
+        auto bothCurves = computePrimalAndDualHomologyBases(
+            *mesh, geom->edgeLengths, connectBoundary);
+        std::vector<double> dualEdgeCosts;
+        for (const std::vector<Halfedge>& loop : std::get<1>(bothCurves)) {
+            for (Halfedge he : loop) {
+                double edgeCost = 0;
+                for (Halfedge he : primalTreeLoop(he, primalTree, false)) {
+                    edgeCost += geom->edgeLengths[he.edge()];
+                }
+                dualEdgeCosts.push_back(edgeCost);
+            }
+        }
+        plotPrimalCurves(std::get<0>(bothCurves));
+        plotDualCurves(std::get<1>(bothCurves), dualEdgeCosts);
+        geom->unrequireEdgeLengths();
+    }
 
     // Give control to the polyscope gui
     polyscope::show();

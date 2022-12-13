@@ -2,6 +2,8 @@
 
 #include "geometrycentral/surface/manifold_surface_mesh.h"
 
+#include "polyscope/surface_mesh.h"
+
 #include "utils.h"
 
 #include <queue>
@@ -43,62 +45,94 @@ class FaceAndBoundaryData {
 
 //==== Tree-Cotree
 std::vector<std::vector<Halfedge>>
-computePrimalHomologyBasis(ManifoldSurfaceMesh& mesh);
+computePrimalHomologyBasis(ManifoldSurfaceMesh& mesh,
+                           bool connectBoundary = false);
+
 std::vector<std::vector<Halfedge>>
 computePrimalHomologyBasis(ManifoldSurfaceMesh& mesh,
-                           const EdgeData<double>& edgeCost);
+                           const EdgeData<double>& edgeCost,
+                           bool connectBoundary = false);
+
 std::vector<std::vector<Halfedge>>
-computeDualHomologyBasis(ManifoldSurfaceMesh& mesh);
-std::tuple<std::vector<std::vector<Halfedge>>,
-           std::vector<std::vector<Halfedge>>>
-computePrimalAndDualHomologyBases(ManifoldSurfaceMesh& mesh,
-                                  const EdgeData<double>& edgeCost);
-std::tuple<std::vector<std::vector<Halfedge>>,
-           std::vector<std::vector<Halfedge>>>
-computePrimalAndDualHomologyBases(ManifoldSurfaceMesh& mesh);
+computeDualHomologyBasis(ManifoldSurfaceMesh& mesh,
+                         bool connectBoundary = false);
+
+std::vector<std::vector<Halfedge>>
+computeDualHomologyBasis(ManifoldSurfaceMesh& mesh,
+                         const EdgeData<double>& edgeCost,
+                         bool connectBoundary = false);
+
+void computeHomologyBases(
+    ManifoldSurfaceMesh& mesh, const VertexData<Halfedge>& primalTree,
+    const FaceAndBoundaryData<Halfedge>& dualTree,
+    std::vector<std::vector<Halfedge>>* primalBasis = nullptr,
+    std::vector<std::vector<Halfedge>>* dualBasis   = nullptr,
+    bool ignoreBoundaryEdges                        = false);
 
 // Encodes the primal spanning tree via a VertexData<Halfedge> primalParent
 // where primalParent[v].vertex() is v's parent, and primalParent[v].edge()
 // is the edge from the parent to v
 // If dualTree is specified, the primal tree avoids those edges
-VertexData<Halfedge> buildPrimalSpanningTree(ManifoldSurfaceMesh& mesh);
+// If connectBoundary is true, then the spanning tree is allowed to jump between
+// vertices on the boundary of the mesh. This is useful for computing [relative
+// homology generators](https://en.wikipedia.org/wiki/Relative_homology)
+// (essentially homology generators which are allowed to start and end on the
+// boundary of the mesh)
+VertexData<Halfedge> buildPrimalSpanningTree(ManifoldSurfaceMesh& mesh,
+                                             bool connectBoundary = false,
+                                             Vertex root          = Vertex());
+VertexData<Halfedge> buildPrimalSpanningTree(ManifoldSurfaceMesh& mesh,
+                                             const EdgeData<double>& edgeWeight,
+                                             bool connectBoundary = false,
+                                             Vertex root          = Vertex());
 VertexData<Halfedge>
 buildPrimalSpanningTree(ManifoldSurfaceMesh& mesh,
-                        const EdgeData<double>& edgeWeight);
-VertexData<Halfedge>
-buildPrimalSpanningTree(ManifoldSurfaceMesh& mesh,
-                        const FaceAndBoundaryData<Halfedge>& dualTree);
+                        const FaceAndBoundaryData<Halfedge>& dualTree,
+                        bool connectBoundary = true, Vertex root = Vertex());
 VertexData<Halfedge>
 buildPrimalSpanningTree(ManifoldSurfaceMesh& mesh,
                         const EdgeData<double>& edgeWeight,
-                        const FaceAndBoundaryData<Halfedge>& dualTree);
+                        const FaceAndBoundaryData<Halfedge>& dualTree,
+                        bool connectBoundary = true, Vertex root = Vertex());
 bool inPrimalSpanningTree(Halfedge he, const VertexData<Halfedge>& primalTree);
 
 // Similarly, encodes the dual spanning tree via a FaceData<Halfedge> dualParent
 // where dualParent[f].face() is f's parent and dualParent[f].edge() is the
 // (primal) edge between f and its parent
 // If primalTree is specified, the dual tree avoids those edges
+// If connectBoundary is true, then the spanning tree is allowed to jump between
+// faces on the boundary of the mesh. This is useful for computing [relative
+// homology generators](https://en.wikipedia.org/wiki/Relative_homology)
+// (essentially homology generators which are allowed to start and end on the
+// boundary of the mesh)
 FaceAndBoundaryData<Halfedge>
-buildDualSpanningCotree(ManifoldSurfaceMesh& mesh);
-FaceAndBoundaryData<Halfedge>
-buildDualSpanningCotree(ManifoldSurfaceMesh& mesh,
-                        const EdgeData<double>& edgeWeight);
-FaceAndBoundaryData<Halfedge>
-buildDualSpanningCotree(ManifoldSurfaceMesh& mesh,
-                        const VertexData<Halfedge>& primalTree);
+buildDualSpanningCotree(ManifoldSurfaceMesh& mesh, bool connectBoundary = false,
+                        Face root = Face());
 FaceAndBoundaryData<Halfedge>
 buildDualSpanningCotree(ManifoldSurfaceMesh& mesh,
                         const EdgeData<double>& edgeWeight,
-                        const VertexData<Halfedge>& primalTree);
+                        bool connectBoundary = false, Face root = Face());
+FaceAndBoundaryData<Halfedge>
+buildDualSpanningCotree(ManifoldSurfaceMesh& mesh,
+                        const VertexData<Halfedge>& primalTree,
+                        bool connectBoundary = true, Face root = Face());
+FaceAndBoundaryData<Halfedge>
+buildDualSpanningCotree(ManifoldSurfaceMesh& mesh,
+                        const EdgeData<double>& edgeWeight,
+                        const VertexData<Halfedge>& primalTree,
+                        bool connectBoundary = true, Face root = Face());
 bool inDualSpanningCotree(Halfedge he,
                           const FaceAndBoundaryData<Halfedge>& dualTree);
 
 std::vector<Halfedge> primalTreeLoop(Halfedge he,
-                                     const VertexData<Halfedge>& primalTree);
+                                     const VertexData<Halfedge>& primalTree,
+                                     bool trimLoop = true);
 std::vector<Halfedge>
-dualTreeLoop(Halfedge he, const FaceAndBoundaryData<Halfedge>& dualTree);
+dualTreeLoop(Halfedge he, const FaceAndBoundaryData<Halfedge>& dualTree,
+             bool trimLoop = true);
 
 // Walk up dual tree from he1 and he2 and return path between them
 std::vector<Halfedge>
 dualTreePath(Halfedge heSrc, Halfedge heDst,
-             const FaceAndBoundaryData<Halfedge>& dualTree);
+             const FaceAndBoundaryData<Halfedge>& dualTree,
+             bool trimLoop = true);
