@@ -3,9 +3,11 @@
 #include "geometrycentral/surface/manifold_surface_mesh.h"
 #include "geometrycentral/surface/meshio.h"
 #include "geometrycentral/surface/simple_idt.h"
+#include "geometrycentral/surface/trace_geodesic.h"
 #include "geometrycentral/surface/vertex_position_geometry.h"
 #include "geometrycentral/utilities/utilities.h"
 
+#include "polyscope/curve_network.h"
 #include "polyscope/point_cloud.h"
 #include "polyscope/polyscope.h"
 #include "polyscope/surface_mesh.h"
@@ -19,8 +21,8 @@ using namespace geometrycentral;
 using namespace geometrycentral::surface;
 
 // == Geometry-central data
-// std::unique_ptr<ManifoldSurfaceMesh> mesh;
-std::unique_ptr<SurfaceMesh> mesh;
+std::unique_ptr<ManifoldSurfaceMesh> mesh;
+// std::unique_ptr<SurfaceMesh> mesh;
 std::unique_ptr<VertexPositionGeometry> geom;
 
 // Polyscope visualization handle, to quickly add data to the surface
@@ -31,7 +33,9 @@ polyscope::SurfaceMesh* psMesh;
 // https://github.com/ocornut/imgui/blob/master/imgui.h
 void myCallback() {}
 
-Vector3 inR3(SurfacePoint& p) { return p.interpolate(geom->vertexPositions); }
+Vector3 inR3(const SurfacePoint& p) {
+    return p.interpolate(geom->vertexPositions);
+}
 
 std::array<Vector3, 2> getEdgeTangentBasis(Edge e) {
     geom->requireFaceNormals();
@@ -107,19 +111,19 @@ int main(int argc, char** argv) {
     polyscope::state::userCallback = myCallback;
 
     // Load mesh
-    // std::tie(mesh, geom) = readManifoldSurfaceMesh(filename);
-    std::tie(mesh, geom) = readSurfaceMesh(filename);
+    std::tie(mesh, geom) = readManifoldSurfaceMesh(filename);
+    // std::tie(mesh, geom) = readSurfaceMesh(filename);
 
     // Register the mesh with polyscope
     psMesh = polyscope::registerSurfaceMesh(
         polyscope::guessNiceNameFromPath(filename), geom->vertexPositions,
         mesh->getFaceVertexList(), polyscopePermutations(*mesh));
 
-    GeodesicAlgorithmExact mmp(*mesh, *geom);
-    SurfacePoint p(mesh->face(0), Vector3{1., 1., 1.} / 3.);
-    SurfacePoint q(mesh->edge(57), 0.3);
-    mmp.propagate({p});
-    psMesh->addVertexScalarQuantity("dist", mmp.getDistanceFunction());
+    // GeodesicAlgorithmExact mmp(*mesh, *geom);
+    // SurfacePoint p(mesh->face(0), Vector3{1., 1., 1.} / 3.);
+    // SurfacePoint q(mesh->edge(57), 0.3);
+    // mmp.propagate({p});
+    // psMesh->addVertexScalarQuantity("dist", mmp.getDistanceFunction());
     // VertexData<Vector2> logMap(*mesh);
     // for (Vertex v : mesh->vertices()) {
     //     logMap[v] = mmp.getLog(v);
@@ -136,7 +140,7 @@ int main(int argc, char** argv) {
     // }
     // WATCH(maxErr);
 
-    std::vector<SurfacePoint> samplePts;
+    // std::vector<SurfacePoint> samplePts;
     // for (Vertex v : mesh->vertices()) samplePts.push_back(SurfacePoint(v));
     // for (Edge e : mesh->edges()) {
     //     samplePts.push_back(SurfacePoint(e, 0.33));
@@ -162,6 +166,7 @@ int main(int argc, char** argv) {
     //         }
 
     //         // samplePts.push_back(SurfacePoint(he.tailVertex()));
+    //         samplePts.push_back(SurfacePoint(he, 0.5));
 
     //         Face f = he.face();
 
@@ -189,6 +194,45 @@ int main(int argc, char** argv) {
     // samplePositions); psPoints->addScalarQuantity("dist", sampleDists);
     // psPoints->addParameterizationQuantity("log", sampleLogs);
     // psPoints->addVectorQuantity("grad", sampleGradients);
+
+    auto vizPath = [&](std::string name,
+                       const std::vector<SurfacePoint>& path) {
+        std::vector<Vector3> p;
+        for (const SurfacePoint& pt : path) p.push_back(inR3(pt));
+        return polyscope::registerCurveNetworkLine(name, p);
+    };
+
+    auto intrinsicLength =
+        [&](const std::vector<SurfacePoint>& path) -> double {
+        double len = 0;
+        for (size_t iP = 0; iP + 1 < path.size(); iP++) {
+            len += exactgeodesic::compute_surface_distance(*geom, path[iP],
+                                                           path[iP + 1]);
+        }
+        return len;
+    };
+    auto extrinsicLength =
+        [&](const std::vector<SurfacePoint>& path) -> double {
+        double len = 0;
+        for (size_t iP = 0; iP + 1 < path.size(); iP++) {
+            double segLen = (inR3(path[iP]) - inR3(path[iP + 1])).norm();
+            len += segLen;
+        }
+        return len;
+    };
+
+    SurfacePoint src(mesh->face(0), normalizeBarycentric(Vector3{1, 1, 1}));
+    TraceOptions options;
+    options.includePath = true;
+    // options.maxIters           = 5;
+    Vector2 v                  = 0.8 * Vector2{2., 1.};
+    TraceGeodesicResult result = traceGeodesic(*geom, src, v, options);
+    vizPath("path", result.pathPoints);
+
+    WATCH(result.pathPoints.size());
+    WATCH3(v.norm(), intrinsicLength(result.pathPoints), result.length);
+    double extrinsicLen = extrinsicLength(result.pathPoints);
+    WATCH(extrinsicLen);
 
 
     // Give control to the polyscope gui
