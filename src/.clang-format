@@ -1,6 +1,5 @@
 Language: Cpp
 AlignConsecutiveAssignments: true
-PointerAlignment: Left
 AlignAfterOpenBracket: Align
 AlignOperands: 'true'
 AllowShortBlocksOnASingleLine: 'false'
