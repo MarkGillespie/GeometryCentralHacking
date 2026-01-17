@@ -158,6 +158,256 @@ EdgeData<double> barycentricDualEdgeLengths(ManifoldSurfaceMesh& mesh,
     return dualLengths;
 }
 
+FaceData<Vector3>
+primalOneFormToFaceVectors(ManifoldSurfaceMesh& mesh,
+                           VertexPositionGeometry& geom,
+                           const EdgeData<double>& primalOneForm) {
+    FaceData<Vector3> faceVectors(mesh);
+
+    geom.requireFaceNormals();
+    geom.requireFaceAreas();
+    for (Face f : mesh.faces()) {
+        Vector3 n      = geom.faceNormals[f];
+        faceVectors[f] = Vector3::zero();
+        for (Halfedge ij : f.adjacentHalfedges()) {
+            Vector3 pi = geom.vertexPositions[ij.tailVertex()],
+                    pj = geom.vertexPositions[ij.tipVertex()],
+                    pk = geom.vertexPositions[ij.next().tipVertex()];
+
+            double sign = (ij.orientation() ? 1.0 : -1.0);
+
+            faceVectors[f] += sign * primalOneForm[ij.edge()] *
+                              (cross(pk - pj, n) - cross(pi - pk, n));
+        }
+
+        faceVectors[f] = faceVectors[f] / (6. * geom.faceAreas[f]);
+    }
+    geom.unrequireFaceAreas();
+    geom.unrequireFaceNormals();
+
+    return faceVectors;
+}
+
+FaceData<Vector3>
+dualOneFormToFaceVectors(ManifoldSurfaceMesh& mesh,
+                         VertexPositionGeometry& geom,
+                         const EdgeData<double>& dualOneForm) {
+    FaceData<Vector3> faceVectors(mesh);
+    EdgeData<double> primalOneForm(mesh,
+                                   geom.hodge1Inverse * dualOneForm.raw());
+
+    geom.requireFaceNormals();
+    geom.requireFaceAreas();
+    for (Face f : mesh.faces()) {
+        Vector3 n      = geom.faceNormals[f];
+        faceVectors[f] = Vector3::zero();
+        for (Halfedge ij : f.adjacentHalfedges()) {
+            Vector3 pi = geom.vertexPositions[ij.tailVertex()],
+                    pj = geom.vertexPositions[ij.tipVertex()],
+                    pk = geom.vertexPositions[ij.next().tipVertex()];
+
+            double sign = (ij.orientation() ? 1.0 : -1.0);
+
+            faceVectors[f] += sign * primalOneForm[ij.edge()] *
+                              (cross(pk - pj, n) - cross(pi - pk, n));
+        }
+
+        faceVectors[f] = -cross(n, faceVectors[f]) / (6. * geom.faceAreas[f]);
+        if (faceVectors[f].norm() > 1.) { // FIXME: remove this
+            faceVectors[f] = unit(faceVectors[f]);
+        }
+    }
+    geom.unrequireFaceAreas();
+    geom.unrequireFaceNormals();
+
+    return faceVectors;
+}
+
+// Returns harmonic 1-forms dual to the given generators
+HarmonicGenerators
+local_computeHarmonicGenerators(ManifoldSurfaceMesh& mesh,
+                                IntrinsicGeometryInterface& geom,
+                                const HomologyGenerators& generators) {
+    auto sign = [&](Halfedge ij) -> double {
+        return ij.orientation() ? 1. : -1.;
+    };
+    HarmonicGenerators result;
+    geom.requireCotanLaplacian();
+    geom.requireDECOperators();
+    SparseMatrix<double> L0       = geom.cotanLaplacian;
+    const SparseMatrix<double>&d0 = geom.d0, &d1 = geom.d1;
+    const SparseMatrix<double>&hodge1 = geom.hodge1,
+          hodge1Inv                   = geom.hodge1Inverse;
+    SparseMatrix<double> L2           = d1 * hodge1Inv * d1.transpose();
+
+    std::vector<Eigen::Triplet<double>> d1DirichletTriplets, d1NeumannTriplets;
+    geom.requireFaceIndices();
+    geom.requireEdgeIndices();
+    const FaceData<size_t>& fIdx = geom.faceIndices;
+    const EdgeData<size_t>& eIdx = geom.edgeIndices;
+    for (Face f : mesh.faces()) {
+        size_t iF = fIdx[f];
+        for (Halfedge h : f.adjacentHalfedges()) {
+            size_t iE = eIdx[h.edge()];
+            if (h.edge().isBoundary()) {
+                d1DirichletTriplets.emplace_back(iF, iE, 1);
+                // d1NeumannTriplets.emplace_back(iF, iE, 0); // don't need to
+                // set zero coefficient
+            } else {
+                d1DirichletTriplets.emplace_back(iF, iE, sign(h));
+                d1NeumannTriplets.emplace_back(iF, iE, sign(h));
+            }
+        }
+    }
+    geom.unrequireEdgeIndices();
+    geom.unrequireFaceIndices();
+
+    size_t nE = mesh.nEdges(), nF = mesh.nFaces();
+    SparseMatrix<double> d1Dirichlet(nF, nE), d1Neumann(nF, nE);
+    d1Dirichlet.setFromTriplets(d1DirichletTriplets.begin(),
+                                d1DirichletTriplets.end());
+    d1Neumann.setFromTriplets(d1NeumannTriplets.begin(),
+                              d1NeumannTriplets.end());
+
+    SparseMatrix<double> L2Dirichlet =
+        d1Dirichlet * hodge1Inv * d1Dirichlet.transpose();
+    SparseMatrix<double> L2Neumann =
+        d1Neumann * hodge1Inv * d1Neumann.transpose();
+
+    VertexData<bool> isInteriorVertex(mesh, true);
+    for (BoundaryLoop b : mesh.boundaryLoops()) {
+        for (Vertex i : b.adjacentVertices()) isInteriorVertex[i] = false;
+    }
+
+    BlockDecompositionResult<double> decomp0 =
+        blockDecomposeSquare(L0, isInteriorVertex.raw(), false);
+    SparseMatrix<double> L0ii        = decomp0.AA;
+    const SparseMatrix<double>& L0ib = decomp0.AB;
+
+    //===== get primal harmonic generators by solving for jump across dual
+    // generators
+    result.primalGenerators.reserve(generators.dualGenerators.size());
+    for (const std::vector<Halfedge>& dualGenerator :
+         generators.dualGenerators) {
+        EdgeData<double> jump(mesh, 0);
+        for (Halfedge ij : dualGenerator) jump[ij.edge()] += sign(ij);
+
+        // Solve for a jump-harmonic function w/ given jump and appropriate
+        // boundary conditions
+        Vector<double> alpha;
+        switch (generators.primalType) {
+        case HomologyType::Absolute: { // impose zero-Neumann boundary condition
+                                       // on potential
+            Vector<double> rhs = d0.transpose() * hodge1 * jump.raw();
+            alpha              = solvePositiveDefinite(L0, rhs);
+            break;
+        }
+        case HomologyType::Relative: { // impose zero-Dirichlet boundary
+                                       // condition on potential
+            Vector<double> rhs = d0.transpose() * hodge1 * jump.raw();
+            alpha              = solvePositiveDefinite(L0, rhs);
+
+            Vector<double> fullRHS = d0.transpose() * hodge1 * jump.raw(), iRHS,
+                           bRHS;
+            decomposeVector(decomp0, fullRHS, iRHS, bRHS);
+
+            Vector<double> iPotential = solvePositiveDefinite(L0ii, iRHS);
+            Vector<double> bPotential = Vector<double>::Zero(bRHS.size());
+            alpha = reassembleVector(decomp0, iPotential, bPotential);
+            break;
+        }
+        }
+
+        EdgeData<double> gamma(mesh, d0 * alpha);
+        for (Halfedge ij : dualGenerator) gamma[ij.edge()] -= sign(ij);
+        result.primalGenerators.push_back(gamma);
+    }
+
+    //===== get dual harmonic generators by solving for jump across primal
+    // generators
+    result.dualGenerators.reserve(generators.primalGenerators.size());
+    size_t iG = 0;
+    for (const std::vector<Halfedge>& primalGenerator :
+         generators.primalGenerators) {
+        EdgeData<double> jump(mesh, 0);
+        for (Halfedge ij : primalGenerator) jump[ij.edge()] += sign(ij);
+
+        // Let jump = *^1 d0 α + d1^T β + γ,
+        // where α has zero-Neumann boundary conditions, and β has
+        // zero-Dirichlet. Then d0^T * d0 α = d0^T jump, and d1 *^{-1} d1^T β =
+        // d1 *^{-1}  jump
+
+        // Solve for a jump-harmonic function w/ given jump and appropriate
+        // boundary conditions
+        EdgeData<double> gamma;
+        std::cout << "dual generator type: " << generators.dualType
+                  << std::endl;
+        switch (generators.dualType) {
+        case HomologyType::Absolute: { // impose zero-Neumann boundary condition
+                                       // on potential
+            Vector<double> rhs  = d1Neumann * hodge1Inv * jump.raw();
+            Vector<double> beta = solvePositiveDefinite(L2Neumann, rhs);
+            polyscope::getSurfaceMesh("mesh")->addFaceScalarQuantity(
+                "beta " + std::to_string(iG), beta);
+            gamma = EdgeData<double>(mesh, d1Neumann.transpose() * beta);
+            break;
+        }
+        case HomologyType::Relative: { // impose zero-Dirichlet boundary
+                                       // condition on potential
+            HERE();
+            Vector<double> rhs  = d1Dirichlet * hodge1Inv * jump.raw();
+            Vector<double> beta = solvePositiveDefinite(L2Dirichlet, rhs);
+            polyscope::getSurfaceMesh("mesh")->addFaceScalarQuantity(
+                "beta " + std::to_string(iG), beta);
+            gamma = EdgeData<double>(mesh, d1Dirichlet.transpose() * beta);
+            break;
+        }
+        }
+
+        // { // alpha; impose zero-Neumann boundary condition on potential
+        //   Vector<double> rhs = d0.transpose() * jump.raw();
+        //   alpha = solvePositiveDefinite(L0, rhs);
+        // }
+
+        for (Halfedge ij : primalGenerator) gamma[ij.edge()] -= sign(ij);
+        result.dualGenerators.push_back(gamma);
+
+        // EdgeData<double> gamma(mesh, jump.raw() - hodge1 * d0 * alpha -
+        // d1Dirichlet.transpose() * beta);
+        // result.dualGenerators.push_back(-gamma);
+        iG++;
+    }
+
+    // for (size_t iG = 0; iG < generators.dualGenerators.size(); iG++) {
+    //   const std::vector<Halfedge>& dualGenerator =
+    //   generators.dualGenerators[iG]; const EdgeData<double>& gamma =
+    //   result.primalGenerators[iG]; for (size_t iH = 0; iH <
+    //   generators.primalGenerators.size(); iH++) {
+    //     const std::vector<Halfedge>& primalGenerator =
+    //     generators.primalGenerators[iH]; double gammaIntegral = 0; for
+    //     (Halfedge ij : primalGenerator) gammaIntegral += sign(ij) *
+    //     gamma[ij.edge()]; std::cout << "int gamma (" << iG << ", " << iH <<
+    //     "): " << gammaIntegral << std::endl;
+
+    //     double intersectionCount = 0;
+    //     for (Halfedge ij : primalGenerator) {
+    //       for (Halfedge ab : dualGenerator) {
+    //         if (ij.edge() == ab.edge()) intersectionCount -= sign(ij) *
+    //         sign(ab);
+    //       }
+    //     }
+    //     std::cout << "intersect (" << iG << ", " << iH << "): " <<
+    //     intersectionCount << std::endl;
+    //   }
+    // }
+
+    //===== dual generators
+    result.dualGenerators.reserve(generators.dualGenerators.size());
+    geom.unrequireDECOperators();
+    geom.unrequireCotanLaplacian();
+    return result;
+}
+
 // A user-defined callback, for creating control panels (etc)
 // Use ImGUI commands to build whatever you want here, see
 // https://github.com/ocornut/imgui/blob/master/imgui.h
@@ -180,8 +430,16 @@ void myCallback() {
         HarmonicGenerators harmonicGenerators =
             computeHarmonicGenerators(*mesh, *geom, homologyGenerators);
         psMesh->addOneFormIntrinsicVectorQuantity(
-            "harmonic 0", harmonicGenerators.primalGenerators[0],
+            "harmonic 0 (primal)", harmonicGenerators.primalGenerators[0],
             psEdgeOrientations);
+        psMesh->addFaceVectorQuantity(
+            "harmonic 0 (primal; vec)",
+            primalOneFormToFaceVectors(*mesh, *geom,
+                                       harmonicGenerators.primalGenerators[0]));
+        psMesh->addFaceVectorQuantity(
+            "harmonic 0 (dual; vec)",
+            dualOneFormToFaceVectors(*mesh, *geom,
+                                     harmonicGenerators.dualGenerators[0]));
     }
     if (ImGui::Button("relative primal generators")) {
         opt.generatorType = HomologyGeneratorType::RelativePrimal;
@@ -193,7 +451,23 @@ void myCallback() {
     }
     if (ImGui::Button("relative primal absolute dual generators")) {
         opt.generatorType = HomologyGeneratorType::RelativePrimalAbsoluteDual;
-        vizGenerators(*mesh, *geom, computeHomologyGenerators(*mesh, opt));
+        HomologyGenerators homologyGenerators =
+            computeHomologyGenerators(*mesh, opt);
+        vizGenerators(*mesh, *geom, homologyGenerators);
+
+        HarmonicGenerators harmonicGenerators =
+            computeHarmonicGenerators(*mesh, *geom, homologyGenerators);
+        psMesh->addOneFormIntrinsicVectorQuantity(
+            "harmonic 0 (primal)", harmonicGenerators.primalGenerators[0],
+            psEdgeOrientations);
+        psMesh->addFaceVectorQuantity(
+            "harmonic 0 (primal; vec)",
+            primalOneFormToFaceVectors(*mesh, *geom,
+                                       harmonicGenerators.primalGenerators[0]));
+        psMesh->addFaceVectorQuantity(
+            "harmonic 0 (dual; vec)",
+            dualOneFormToFaceVectors(*mesh, *geom,
+                                     harmonicGenerators.dualGenerators[0]));
     }
 }
 
@@ -239,9 +513,9 @@ int main(int argc, char** argv) {
     }
 
     // Register the mesh with polyscope
-    psMesh = polyscope::registerSurfaceMesh(
-        polyscope::guessNiceNameFromPath(filename), geom->vertexPositions,
-        mesh->getFaceVertexList(), polyscopePermutations(*mesh));
+    psMesh = polyscope::registerSurfaceMesh("mesh", geom->vertexPositions,
+                                            mesh->getFaceVertexList(),
+                                            polyscopePermutations(*mesh));
 
     // Give control to the polyscope gui
     polyscope::show();
